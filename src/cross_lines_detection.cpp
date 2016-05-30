@@ -55,7 +55,7 @@ protected:
   std::vector<pcl_msgs::ModelCoefficients> lines_vector;
   std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> clouds_vector;
   int line_numb;
-  pcl::ModelCoefficients line_coefficients;
+  //pcl::ModelCoefficients line_coefficients;
 
 	
 
@@ -80,7 +80,7 @@ public:
 
 private:
   void cloudInHandler(const sensor_msgs::LaserScan::ConstPtr& scan);
-  bool detectLines(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int line_numb);
+  bool detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int line_numb);
   pcl::PointCloud<pcl::PointXYZ>::Ptr cropCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, pcl::PointIndices inliers);
   //bool getLineEnd(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, pcl::PointIndices inliers, geometry_msgs::Point &line_end_point);
 };
@@ -179,39 +179,69 @@ void CrossLinesDetection::cloudInHandler(const sensor_msgs::LaserScan::ConstPtr&
 /*!	\fn bool CrossLinesDetection::detectLines(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int line_numb, geometry_msgs::PoseStamped& line_pose_)
  *	\brief gets the rows of the left and right vineyard, and publishes the end point of each row
 */
-bool CrossLinesDetection::detectLines(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int line_numb)
+bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int line_numb)
 {
-	pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>);
-	pcl_msgs::ModelCoefficients ros_coefficients;	
-	pcl::PointIndices inliers;
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_line(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients ());
+    pcl::PointIndices::Ptr inliers (new pcl::PointIndices ());
 	pcl::SACSegmentation<pcl::PointXYZ> seg;
 	//geometry_msgs::PointStamped line_end_point;
 	seg.setOptimizeCoefficients(true);
 	seg.setModelType(pcl::SACMODEL_LINE);
-	seg.setMethodType(pcl::SAC_RANSAC);
-	seg.setDistanceThreshold(ransac_threshold_);
-	seg.setInputCloud(cloud);
+    seg.setMethodType(pcl::SAC_RANSAC);
+    //seg.setMaxIterations(1000);
+    //seg.setDistanceThreshold(ransac_threshold_);
+    seg.setDistanceThreshold(0.005);
+
+
+    int i = 0, nr_points = (int) cloud->points.size ();
+     // While 10% of the original cloud is still there
+     while (cloud_filtered->points.size () > 0.1 * nr_points){
+         // Segment the largest planar component from the remaining cloud
+            seg.setInputCloud (cloud);
+            seg.segment (*inliers, *coefficients);
+            if (inliers->indices.size () == 0)
+            {
+              std::cerr << "Could not estimate a planar model for the given dataset." << std::endl;
+              break;
+            }
+
+            // Extract the inliers
+            extract.setInputCloud (cloud_filtered);
+            extract.setIndices (inliers);
+            extract.setNegative (false);
+            extract.filter (*cloud_line);
+            ROS_INFO("PointCloud representing the line component: %d data points", cloud_line->width * cloud_line->height);
+
+            //SAVE LINE IN VECTOR OF LINES
+
+            // Create the filtering object
+            extract.setNegative (true);
+            extract.filter (*cloud_f);
+            cloud_filtered.swap (cloud_f);
+            i++;
+     }
   
-	if (cloud->points.size() > 2)
-	{
-		seg.segment(inliers, line_coefficients);
-		/* Coefficients for a model of type pcl::SACMODEL_LINE are: [x, y, z, dir_x, dir_y, dir_z] */
-		cloud_filtered = cropCloud(cloud, inliers);				
-		clouds_vector.push_back(cloud_filtered);
-		lines_vector.push_back(line_coefficients);
-		line_numb++;
-		//pcl_conversions::fromPCL(coefficients, ros_coefficients);
-		// Publish filtered cloud for debug
-		if(publish_filtered_cloud_)
-		{
-			pub_filtered_cloud_.publish(cloud_filtered);
-		}
-	}
-	else
-	{
-		ROS_INFO("Cloud Processed");
-		return 0;
-	} 
+//	/*if (cloud->points.size() > 2)
+//	{
+//        seg.segment(*inliers, *coefficients);
+//		/* Coefficients for a model of type pcl::SACMODEL_LINE are: [x, y, z, dir_x, dir_y, dir_z] */
+//		cloud_filtered = cropCloud(cloud, inliers);
+//		clouds_vector.push_back(cloud_filtered);
+//        lines_vector.push_back(*coefficients);
+//		line_numb++;
+//		//pcl_conversions::fromPCL(coefficients, ros_coefficients);
+//		// Publish filtered cloud for debug
+//		if(publish_filtered_cloud_)
+//		{
+//			pub_filtered_cloud_.publish(cloud_filtered);
+//		}
+//	}
+//	else
+//	{
+//		ROS_INFO("Cloud Processed");
+//		return 0;
+//	}
 	/*
 	// Pose fill
 	line_pose_.header = ros_coefficients.header;
@@ -243,7 +273,7 @@ bool CrossLinesDetection::detectLines(const pcl::PointCloud<pcl::PointXYZ>::Ptr&
 /*!	\fn geometry_msgs::Pose CrossLinesDetection::cropCloud()
  *	\brief returns pointcloud with the line in cloud_filtered and extract those from the original pcl
 */
-pcl::PointCloud<pcl::PointXYZ>::Ptr CrossLinesDetection::cropCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, pcl::PointIndices inliers)
+pcl::PointCloud<pcl::PointXYZ>::Ptr CrossLinesDetection::cropCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, pcl::PointIndicesPtr& inliers)
 {
 	pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>);
 	// Copies all inliers of the model computed to another PointCloud
