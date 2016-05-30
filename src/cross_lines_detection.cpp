@@ -182,6 +182,7 @@ void CrossLinesDetection::cloudInHandler(const sensor_msgs::LaserScan::ConstPtr&
 bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int line_numb)
 {
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_line(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filter(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients ());
     pcl::PointIndices::Ptr inliers (new pcl::PointIndices ());
 	pcl::SACSegmentation<pcl::PointXYZ> seg;
@@ -193,21 +194,23 @@ bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud
     //seg.setDistanceThreshold(ransac_threshold_);
     seg.setDistanceThreshold(0.005);
 
+    // Create the filtering object
+    pcl::ExtractIndices<pcl::PointXYZ> extract;
 
     int i = 0, nr_points = (int) cloud->points.size ();
      // While 10% of the original cloud is still there
-     while (cloud_filtered->points.size () > 0.1 * nr_points){
+     while (cloud->points.size () > 0.1 * nr_points){
          // Segment the largest planar component from the remaining cloud
             seg.setInputCloud (cloud);
             seg.segment (*inliers, *coefficients);
             if (inliers->indices.size () == 0)
             {
-              std::cerr << "Could not estimate a planar model for the given dataset." << std::endl;
+              ROS_INFO("Could not estimate a planar model for the given dataset.");
               break;
             }
 
             // Extract the inliers
-            extract.setInputCloud (cloud_filtered);
+            extract.setInputCloud (cloud);
             extract.setIndices (inliers);
             extract.setNegative (false);
             extract.filter (*cloud_line);
@@ -217,8 +220,8 @@ bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud
 
             // Create the filtering object
             extract.setNegative (true);
-            extract.filter (*cloud_f);
-            cloud_filtered.swap (cloud_f);
+            extract.filter (*cloud_filter);
+            cloud.swap (cloud_filter);
             i++;
      }
   
@@ -273,21 +276,21 @@ bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud
 /*!	\fn geometry_msgs::Pose CrossLinesDetection::cropCloud()
  *	\brief returns pointcloud with the line in cloud_filtered and extract those from the original pcl
 */
-pcl::PointCloud<pcl::PointXYZ>::Ptr CrossLinesDetection::cropCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, pcl::PointIndicesPtr& inliers)
-{
-	pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>);
-	// Copies all inliers of the model computed to another PointCloud
-	pcl::copyPointCloud<pcl::PointXYZ>(*cloud, inliers, *cloud_filtered);
-	// Extract fInliers from the input cloud
-	pcl::ExtractIndices<pcl::PointXYZ> extract ;
-	extract.setInputCloud (cloud);
-	extract.setIndices (inliers);
-	//extract.setNegative (false); //Removes part_of_cloud but retain the original full_cloud
-	extract.setNegative (true); // Removes part_of_cloud from full cloud  and keep the rest
-	extract.filter (*cloud); 
+//pcl::PointCloud<pcl::PointXYZ>::Ptr CrossLinesDetection::cropCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, pcl::PointIndicesPtr& inliers)
+//{
+//	pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>);
+//	// Copies all inliers of the model computed to another PointCloud
+//	pcl::copyPointCloud<pcl::PointXYZ>(*cloud, inliers, *cloud_filtered);
+//	// Extract fInliers from the input cloud
+//	pcl::ExtractIndices<pcl::PointXYZ> extract ;
+//	extract.setInputCloud (cloud);
+//	extract.setIndices (inliers);
+//	//extract.setNegative (false); //Removes part_of_cloud but retain the original full_cloud
+//	extract.setNegative (true); // Removes part_of_cloud from full cloud  and keep the rest
+//	extract.filter (*cloud);
 
-	return cloud_filtered;
-}
+//	return cloud_filtered;
+//}
 
 /*!	\fn bool CrossLinesDetection::getLineEnd(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, pcl::PointIndices inliers, geometry_msgs::PointStamped line_end_point)
  *	\brief gets the end point of the row defined by the input cloud and the RANSAC inliers
