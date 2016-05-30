@@ -42,6 +42,7 @@ protected:
   ros::NodeHandle pnh_;
   //! ROS publishers  
   ros::Publisher pub_filtered_cloud_ ;
+  ros::Publisher line_cloud_pub_;
   //! ROS subscribers
   ros::Subscriber sub_scan_;  
   //! Parameters
@@ -51,7 +52,7 @@ protected:
   //! Variables
   geometry_msgs::PoseStamped line_pose_, right_line_pose__, look_ahead_pose_;
   laser_geometry::LaserProjection projector_;
-  tf::TransformListener tfListener_;
+  tf::TransformListener listener_;
   std::vector<pcl_msgs::ModelCoefficients> lines_vector;
   std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> clouds_vector;
   int line_numb;
@@ -109,16 +110,17 @@ CrossLinesDetection::~CrossLinesDetection()
 int CrossLinesDetection::setup()
 {
   // Ros params
-  pnh_.param<string>("scan_in_topic_name", scan_in_topic_name_, "input");
-  pnh_.param("ransac_threshold", ransac_threshold_, 0.1);
+  pnh_.param<string>("scan_in_topic_name", scan_in_topic_name_, "hokuyo/scan");
+  pnh_.param("ransac_threshold", ransac_threshold_, 0.005);
   pnh_.param("publish_filtered_cloud", publish_filtered_cloud_, true);
 
   // Topics
-  tfListener_.setExtrapolationLimit(ros::Duration(0.1)); 
+  //tfListener_.setExtrapolationLimit(ros::Duration(0.1));
   sub_scan_ = nh_.subscribe(scan_in_topic_name_, 1, &CrossLinesDetection::cloudInHandler, this);
   //pub_line_ = nh_.advertise<geometry_msgs::PoseStamped>("line_pose", 1);
   pub_filtered_cloud_ = nh_.advertise<PointCloud>("line_cloud", 1);
   //pub_line_end_ = nh_.advertise<geometry_msgs::PointStamped>("line_end", 1);
+  line_cloud_pub_ = nh_.advertise<pcl::PointCloud<pcl::PointXYZ> >("line_cloud_publisher", 10);
   
   new_cloud_processed_ = true;
 
@@ -158,7 +160,14 @@ void CrossLinesDetection::cloudInHandler(const sensor_msgs::LaserScan::ConstPtr&
 	sensor_msgs::PointCloud2 input;
 	bool line_detected_;
 	
-	projector_.transformLaserScanToPointCloud("base_link", *scan, input, tfListener_);
+    //waitForTransform blocks until the transform is possible or time out.
+    if(!listener_.waitForTransform(scan->header.frame_id, "/base_link", scan->header.stamp + ros::Duration().fromSec(scan->ranges.size()*scan->time_increment),
+            ros::Duration(1.0))){
+        ROS_WARN("Transform from %s to /base_link not exist!", scan->header.frame_id.c_str());
+        return;
+    } //TODO TEST IT
+    projector_.transformLaserScanToPointCloud("base_link", *scan, input, listener_);
+    //projector_.transformLaserScanToPointCloud("base_link", *scan, input, tfListener_);
 	pcl::fromROSMsg(input, *cloud);
 
 	
@@ -215,6 +224,8 @@ bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud
             extract.setNegative (false);
             extract.filter (*cloud_line);
             ROS_INFO("PointCloud representing the line component: %d data points", cloud_line->width * cloud_line->height);
+
+            line_cloud_pub_.publish(cloud_line);
 
             //SAVE LINE IN VECTOR OF LINES
 
