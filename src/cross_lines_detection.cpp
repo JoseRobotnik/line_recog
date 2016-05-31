@@ -24,9 +24,17 @@
 #include <laser_geometry/laser_geometry.h>
 #include <tf/transform_listener.h>
 #include <pcl/filters/extract_indices.h>
+#include <pcl/common/intersections.h>
 
 
 using namespace std;
+
+struct segment_t{
+   pcl::PointCloud<pcl::PointXYZ> line_cloud;
+   pcl::ModelCoefficients coeffs;
+};
+
+
 
 typedef pcl::PointCloud<pcl::PointXYZ> PointCloud;
 
@@ -158,7 +166,8 @@ void CrossLinesDetection::cloudInHandler(const sensor_msgs::LaserScan::ConstPtr&
 	pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
 	pcl::PointCloud<pcl::PointXYZ>::Ptr actual_cloud(new pcl::PointCloud<pcl::PointXYZ>);
 	sensor_msgs::PointCloud2 input;
-	bool line_detected_;
+
+    bool line_detected_;
 	
     //waitForTransform blocks until the transform is possible or time out.
     if(!listener_.waitForTransform(scan->header.frame_id, "/base_link", scan->header.stamp + ros::Duration().fromSec(scan->ranges.size()*scan->time_increment),
@@ -170,8 +179,7 @@ void CrossLinesDetection::cloudInHandler(const sensor_msgs::LaserScan::ConstPtr&
     //projector_.transformLaserScanToPointCloud("base_link", *scan, input, tfListener_);
 	pcl::fromROSMsg(input, *cloud);
 
-	
-	if(new_cloud_processed_)
+    if(new_cloud_processed_)
 	{
 		actual_cloud = cloud;
 		new_cloud_processed_ = false;
@@ -190,6 +198,10 @@ void CrossLinesDetection::cloudInHandler(const sensor_msgs::LaserScan::ConstPtr&
 */
 bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int line_numb)
 {
+    Eigen::Vector4f point;
+    std::vector<segment_t> lines;
+    std::vector<Eigen::Vector4f> intersect_points;
+    segment_t segment;
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_line(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filter(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients ());
@@ -201,7 +213,7 @@ bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud
     seg.setMethodType(pcl::SAC_RANSAC);
     //seg.setMaxIterations(1000);
     //seg.setDistanceThreshold(ransac_threshold_);
-    seg.setDistanceThreshold(0.005);
+    seg.setDistanceThreshold(0.006);
 
     // Create the filtering object
     pcl::ExtractIndices<pcl::PointXYZ> extract;
@@ -214,7 +226,7 @@ bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud
             seg.segment (*inliers, *coefficients);
             if (inliers->indices.size () == 0)
             {
-              ROS_INFO("Could not estimate a planar model for the given dataset.");
+              ROS_INFO("Could not estimate a line model for the given dataset.");
               break;
             }
 
@@ -223,11 +235,17 @@ bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud
             extract.setIndices (inliers);
             extract.setNegative (false);
             extract.filter (*cloud_line);
+            ROS_INFO("ANCHURA: %d", cloud_line->width);
+            ROS_INFO("ALTURA: %d", cloud_line->height);
+
             ROS_INFO("PointCloud representing the line component: %d data points", cloud_line->width * cloud_line->height);
 
             line_cloud_pub_.publish(cloud_line);
 
-            //SAVE LINE IN VECTOR OF LINES
+            //Store segments in vector
+            segment.coeffs = *coefficients;
+            segment.line_cloud = *cloud_line;
+            lines.push_back(segment);
 
             // Create the filtering object
             extract.setNegative (true);
@@ -235,6 +253,23 @@ bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud
             cloud.swap (cloud_filter);
             i++;
      }
+
+//     for(std::vector<segment_t>::iterator it = lines.begin(); it != lines.end(); ++it) {
+
+//     }
+
+     for(int i=0;i<lines.size();++i){
+         for(int j=i+1;j<lines.size();++j){
+                bool intersect = pcl::lineWithLineIntersection (lines[i].coeffs, lines[j].coeffs, point, 0.01);
+                if(intersect){
+                    ROS_INFO("Intersection point: x: %f y: %f z: %f w: %f", point[1], point[2], point[3], point[4]);
+                    intersect_points.push_back(point);
+                }
+        }
+     }
+
+     //ITERATOR?
+     //ITER VECTOR
   
 //	/*if (cloud->points.size() > 2)
 //	{
