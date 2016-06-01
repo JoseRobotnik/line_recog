@@ -11,6 +11,7 @@
 #include <pcl/segmentation/sac_segmentation.h>
 #include <pcl/filters/passthrough.h>
 #include <tf/transform_datatypes.h>
+#include <pcl/common/geometry.h>
 
 #include <sensor_msgs/PointCloud2.h>
 #include <geometry_msgs/PoseStamped.h>
@@ -32,6 +33,12 @@ using namespace std;
 struct segment_t{
    pcl::PointCloud<pcl::PointXYZ> line_cloud;
    pcl::ModelCoefficients coeffs;
+};
+
+struct intersection_t{
+    pcl::PointCloud<pcl::PointXYZ> lines[2];
+    pcl::PointXYZ point;
+    float angle;
 };
 
 
@@ -201,6 +208,8 @@ bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud
     Eigen::Vector4f point;
     std::vector<segment_t> lines;
     std::vector<Eigen::Vector4f> intersect_points;
+    std::vector<intersection_t> intersections;
+
     segment_t segment;
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_line(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filter(new pcl::PointCloud<pcl::PointXYZ>);
@@ -213,7 +222,7 @@ bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud
     seg.setMethodType(pcl::SAC_RANSAC);
     //seg.setMaxIterations(1000);
     //seg.setDistanceThreshold(ransac_threshold_);
-    seg.setDistanceThreshold(0.006);
+    seg.setDistanceThreshold(0.03);
 
     // Create the filtering object
     pcl::ExtractIndices<pcl::PointXYZ> extract;
@@ -240,7 +249,7 @@ bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud
 
             ROS_INFO("PointCloud representing the line component: %d data points", cloud_line->width * cloud_line->height);
 
-            line_cloud_pub_.publish(cloud_line);
+            //line_cloud_pub_.publish(cloud_line);
 
             //Store segments in vector
             segment.coeffs = *coefficients;
@@ -258,14 +267,101 @@ bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud
 
 //     }
 
+     pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_lines_extracted(new pcl::PointCloud<pcl::PointXYZI>);
+     cloud_lines_extracted->header.frame_id = "hokuyo_laser_link";
+     for (int i=0; i < lines.size(); i++) {
+         int current_size=cloud_lines_extracted->points.size();
+         cloud_lines_extracted->points.resize(current_size + lines[i].line_cloud.points.size());
+         for (int j = 0; j < lines[i].line_cloud.points.size(); j++) {
+             cloud_lines_extracted->points[j+current_size].x = lines[i].line_cloud.points[j].x;
+             cloud_lines_extracted->points[j+current_size].y = lines[i].line_cloud.points[j].y;
+             cloud_lines_extracted->points[j+current_size].z = lines[i].line_cloud.points[j].z;
+             cloud_lines_extracted->points[j+current_size].intensity = 255*(i)/(lines.size() + 5) ;
+         }
+     }
+     cloud_lines_extracted->width= cloud_lines_extracted->points.size();
+     cloud_lines_extracted->height = 1;
+
+
      for(int i=0;i<lines.size();++i){
          for(int j=i+1;j<lines.size();++j){
-                bool intersect = pcl::lineWithLineIntersection (lines[i].coeffs, lines[j].coeffs, point, 0.01);
+             float min_distance_between_lines = 0.01;
+                bool intersect = pcl::lineWithLineIntersection (lines[i].coeffs, lines[j].coeffs, point, min_distance_between_lines);
                 if(intersect){
-                    ROS_INFO("Intersection point: x: %f y: %f z: %f w: %f", point[1], point[2], point[3], point[4]);
+
+                    //ROS_INFO("Intersection point: x: %f y: %f z: %f w: %f", point[0], point[1], point[2], point[3]);
                     intersect_points.push_back(point);
+
+                    float min_distance_to_segment_i= 10000; //TODO: poner std::limits::float o algo asi
+                    for (int l = 0; l < lines[i].line_cloud.points.size(); l++) {
+                        Eigen::Vector3f p;
+                        p[0] = point[0] - lines[i].line_cloud.points[l].x;
+                        p[1] = point[1] - lines[i].line_cloud.points[l].y;
+                        p[2] = point[2] - lines[i].line_cloud.points[l].z;
+
+                        float distance = p[0]*p[0] + p[1]*p[1] + p[2]*p[2];
+                        if (distance < min_distance_to_segment_i)
+                            min_distance_to_segment_i = distance;
+                    }
+                    float min_distance_to_segment_j= 10000; //TODO: poner std::limits::float o algo asi
+                    for (int l = 0; l < lines[j].line_cloud.points.size(); l++) {
+                        Eigen::Vector3f p;
+                        p[0] = point[0] - lines[j].line_cloud.points[l].x;
+                        p[1] = point[1] - lines[j].line_cloud.points[l].y;
+                        p[2] = point[2] - lines[j].line_cloud.points[l].z;
+
+                        float distance = p[0]*p[0] + p[1]*p[1] + p[2]*p[2];
+                        if (distance < min_distance_to_segment_j)
+                            min_distance_to_segment_j = distance;
+                    }
+                    float distance_to_segment_threshold = 0.05;
+                    if (min_distance_to_segment_i < distance_to_segment_threshold && min_distance_to_segment_j < distance_to_segment_threshold )
+                    {
+                         intersection_t current_intersection;
+                         current_intersection.lines[0] = lines[i].line_cloud;
+                         current_intersection.lines[1] = lines[j].line_cloud;
+                         current_intersection.point.x = point[0];
+                         current_intersection.point.y = point[1];
+                         current_intersection.point.z = point[2];
+
+                         Eigen::Vector4f directions[2];
+                         directions[0][0] = lines[i].coeffs.values[3];
+                         directions[0][1] = lines[i].coeffs.values[4];
+                         directions[0][2] = lines[i].coeffs.values[5];
+                         directions[0][3] = 0;
+
+                         directions[1][0] = lines[j].coeffs.values[3];
+                         directions[1][1] = lines[j].coeffs.values[4];
+                         directions[1][2] = lines[j].coeffs.values[5];
+                         directions[1][3] = 0;
+
+                         current_intersection.angle = pcl::getAngle3D(directions[1], directions[0]);
+
+
+                         intersections.push_back(current_intersection);
+
+                         ROS_INFO("The segments intersect! Angle: %f", current_intersection.angle);
+                         pcl::PointXYZI segment_intersection;
+                         segment_intersection.x = point[0];
+                         segment_intersection.y = point[1];
+                         segment_intersection.z = point[2];
+                         segment_intersection.intensity = 255;
+                         cloud_lines_extracted->points.push_back(segment_intersection);
+                         cloud_lines_extracted->width = cloud_lines_extracted->points.size();
+                    }
                 }
         }
+     }
+
+
+
+     line_cloud_pub_.publish(cloud_lines_extracted);
+
+     //TODO: agrupar las interseccions de 2 en 2, en funcion de si comparten un segmento o no.
+     //Si una interseccion no comparte segmento con otra, se descarta
+
+     for (int i = 0; i < intersections.size(); i++) {
+
      }
 
      //ITERATOR?
