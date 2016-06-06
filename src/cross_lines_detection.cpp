@@ -1,6 +1,8 @@
-
 #include <ros/ros.h>
 #include <vector>
+#include <limits>
+#include <utility>
+
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,23 +32,23 @@
 
 using namespace std;
 
-struct segment_t{
-   pcl::PointCloud<pcl::PointXYZ> line_cloud;
+struct segment_t {
+   pcl::PointCloud<pcl::PointXYZ>::Ptr line_cloud;
    pcl::ModelCoefficients coeffs;
+   int id;
 };
 
 struct intersection_t{
-    pcl::PointCloud<pcl::PointXYZ> lines[2];
+    segment_t segments[2];
     pcl::PointXYZ point;
     float angle;
 };
 
 
-
 typedef pcl::PointCloud<pcl::PointXYZ> PointCloud;
 
 //! Class Rcomponent
-class CrossLinesDetection
+class LaserDockingNode
 {
 protected:
   //!	Saves the name of the component
@@ -78,9 +80,9 @@ protected:
 
 public:
   //! Public constructor
-  CrossLinesDetection(ros::NodeHandle h);
+  LaserDockingNode(ros::NodeHandle h);
   //! Public destructor
-  ~CrossLinesDetection();
+  ~LaserDockingNode();
 
   //! Configures and initializes the component
   //! @return 0
@@ -105,7 +107,7 @@ private:
  *  \brief Constructor by default
  *	\param h as ros::NodeHandle, ROS node handle
 */
-CrossLinesDetection::CrossLinesDetection(ros::NodeHandle h) : nh_(h), pnh_("~")
+LaserDockingNode::LaserDockingNode(ros::NodeHandle h) : nh_(h), pnh_("~")
 {
   component_name_.assign("CrossLinesDetection");
 }
@@ -113,7 +115,7 @@ CrossLinesDetection::CrossLinesDetection(ros::NodeHandle h) : nh_(h), pnh_("~")
 /*! \fn CrossLinesDetection::~CrossLinesDetection()
  * Destructor by default
 */
-CrossLinesDetection::~CrossLinesDetection()
+LaserDockingNode::~LaserDockingNode()
 {
 }
 
@@ -122,7 +124,7 @@ CrossLinesDetection::~CrossLinesDetection()
  * \return 0
  * \return -1
 */
-int CrossLinesDetection::setup()
+int LaserDockingNode::setup()
 {
   // Ros params
   pnh_.param<string>("scan_in_topic_name", scan_in_topic_name_, "hokuyo/scan");
@@ -131,7 +133,7 @@ int CrossLinesDetection::setup()
 
   // Topics
   //tfListener_.setExtrapolationLimit(ros::Duration(0.1));
-  sub_scan_ = nh_.subscribe(scan_in_topic_name_, 1, &CrossLinesDetection::cloudInHandler, this);
+  sub_scan_ = nh_.subscribe(scan_in_topic_name_, 1, &LaserDockingNode::cloudInHandler, this);
   //pub_line_ = nh_.advertise<geometry_msgs::PoseStamped>("line_pose", 1);
   pub_filtered_cloud_ = nh_.advertise<PointCloud>("line_cloud", 1);
   //pub_line_end_ = nh_.advertise<geometry_msgs::PointStamped>("line_end", 1);
@@ -148,7 +150,7 @@ int CrossLinesDetection::setup()
  * \return 0
  * \return -1
 */
-int CrossLinesDetection::shutdown()
+int LaserDockingNode::shutdown()
 {
   return 0;
 }
@@ -156,7 +158,7 @@ int CrossLinesDetection::shutdown()
 /*!	\fn void CrossLinesDetection::start()
  *	\brief All core component functionality is contained in this thread.
 */
-void CrossLinesDetection::start()
+void LaserDockingNode::start()
 {
   ROS_INFO("%s::start(): Init", component_name_.c_str());
 
@@ -168,7 +170,7 @@ void CrossLinesDetection::start()
 /*!	\fn void CrossLinesDetection::cloudInHandler(const sensor_msgs::PointCloud2ConstPtr& input)
  *	\brief Handler to receive the filtered pointcloud
 */
-void CrossLinesDetection::cloudInHandler(const sensor_msgs::LaserScan::ConstPtr& scan)
+void LaserDockingNode::cloudInHandler(const sensor_msgs::LaserScan::ConstPtr& scan)
 {
 	pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
 	pcl::PointCloud<pcl::PointXYZ>::Ptr actual_cloud(new pcl::PointCloud<pcl::PointXYZ>);
@@ -203,12 +205,12 @@ void CrossLinesDetection::cloudInHandler(const sensor_msgs::LaserScan::ConstPtr&
 /*!	\fn bool CrossLinesDetection::detectLines(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int line_numb, geometry_msgs::PoseStamped& line_pose_)
  *	\brief gets the rows of the left and right vineyard, and publishes the end point of each row
 */
-bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int line_numb)
+bool LaserDockingNode::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int line_numb)
 {
     Eigen::Vector4f point;
-    std::vector<segment_t> lines;
-    std::vector<Eigen::Vector4f> intersect_points;
+    std::vector<segment_t> segments;
     std::vector<intersection_t> intersections;
+    std::vector<Eigen::Vector4f> intersect_points;
 
     segment_t segment;
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_line(new pcl::PointCloud<pcl::PointXYZ>);
@@ -253,8 +255,9 @@ bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud
 
             //Store segments in vector
             segment.coeffs = *coefficients;
-            segment.line_cloud = *cloud_line;
-            lines.push_back(segment);
+            segment.line_cloud = cloud_line;
+            segment.id = i;
+            segments.push_back(segment);
 
             // Create the filtering object
             extract.setNegative (true);
@@ -263,76 +266,71 @@ bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud
             i++;
      }
 
-//     for(std::vector<segment_t>::iterator it = lines.begin(); it != lines.end(); ++it) {
-
-//     }
-
      pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_lines_extracted(new pcl::PointCloud<pcl::PointXYZI>);
      cloud_lines_extracted->header.frame_id = "hokuyo_laser_link";
-     for (int i=0; i < lines.size(); i++) {
+     for (int i=0; i < segments.size(); i++) {
          int current_size=cloud_lines_extracted->points.size();
-         cloud_lines_extracted->points.resize(current_size + lines[i].line_cloud.points.size());
-         for (int j = 0; j < lines[i].line_cloud.points.size(); j++) {
-             cloud_lines_extracted->points[j+current_size].x = lines[i].line_cloud.points[j].x;
-             cloud_lines_extracted->points[j+current_size].y = lines[i].line_cloud.points[j].y;
-             cloud_lines_extracted->points[j+current_size].z = lines[i].line_cloud.points[j].z;
-             cloud_lines_extracted->points[j+current_size].intensity = 255*(i)/(lines.size() + 5) ;
+         cloud_lines_extracted->points.resize(current_size + segments[i].line_cloud->points.size());
+         for (int j = 0; j < segments[i].line_cloud->points.size(); j++) {
+             cloud_lines_extracted->points[j+current_size].x = segments[i].line_cloud->points[j].x;
+             cloud_lines_extracted->points[j+current_size].y = segments[i].line_cloud->points[j].y;
+             cloud_lines_extracted->points[j+current_size].z = segments[i].line_cloud->points[j].z;
+             cloud_lines_extracted->points[j+current_size].intensity = 255*(i)/(segments.size() + 5) ;
          }
      }
      cloud_lines_extracted->width= cloud_lines_extracted->points.size();
      cloud_lines_extracted->height = 1;
 
 
-     for(int i=0;i<lines.size();++i){
-         for(int j=i+1;j<lines.size();++j){
-             float min_distance_between_lines = 0.01;
-                bool intersect = pcl::lineWithLineIntersection (lines[i].coeffs, lines[j].coeffs, point, min_distance_between_lines);
-                if(intersect){
-
-                    //ROS_INFO("Intersection point: x: %f y: %f z: %f w: %f", point[0], point[1], point[2], point[3]);
+     for(int i=0;i<segments.size();++i) {
+         for(int j=i+1;j<segments.size();++j) {
+             float min_distance_between_lines = 0.1;
+                bool intersect = pcl::lineWithLineIntersection (segments[i].coeffs, segments[j].coeffs, point, min_distance_between_lines);
+                if(intersect) {
+                    ROS_INFO("Intersection point: x: %f y: %f z: %f w: %f", point[0], point[1], point[2], point[3]);
                     intersect_points.push_back(point);
 
-                    float min_distance_to_segment_i= 10000; //TODO: poner std::limits::float o algo asi
-                    for (int l = 0; l < lines[i].line_cloud.points.size(); l++) {
+                    float min_distance_to_segment_i = std::numeric_limits<float>::max(); //TODO: poner std::limits::float o algo asi
+                    for (int l = 0; l < segments[i].line_cloud->points.size(); l++) {
                         Eigen::Vector3f p;
-                        p[0] = point[0] - lines[i].line_cloud.points[l].x;
-                        p[1] = point[1] - lines[i].line_cloud.points[l].y;
-                        p[2] = point[2] - lines[i].line_cloud.points[l].z;
+                        p[0] = point[0] - segments[i].line_cloud->points[l].x;
+                        p[1] = point[1] - segments[i].line_cloud->points[l].y;
+                        p[2] = point[2] - segments[i].line_cloud->points[l].z;
 
                         float distance = p[0]*p[0] + p[1]*p[1] + p[2]*p[2];
                         if (distance < min_distance_to_segment_i)
                             min_distance_to_segment_i = distance;
                     }
-                    float min_distance_to_segment_j= 10000; //TODO: poner std::limits::float o algo asi
-                    for (int l = 0; l < lines[j].line_cloud.points.size(); l++) {
+                    float min_distance_to_segment_j = std::numeric_limits<float>::max(); //TODO: poner std::limits::float o algo asi
+                    for (int l = 0; l < segments[j].line_cloud->points.size(); l++) {
                         Eigen::Vector3f p;
-                        p[0] = point[0] - lines[j].line_cloud.points[l].x;
-                        p[1] = point[1] - lines[j].line_cloud.points[l].y;
-                        p[2] = point[2] - lines[j].line_cloud.points[l].z;
+                        p[0] = point[0] - segments[j].line_cloud->points[l].x;
+                        p[1] = point[1] - segments[j].line_cloud->points[l].y;
+                        p[2] = point[2] - segments[j].line_cloud->points[l].z;
 
                         float distance = p[0]*p[0] + p[1]*p[1] + p[2]*p[2];
                         if (distance < min_distance_to_segment_j)
                             min_distance_to_segment_j = distance;
                     }
-                    float distance_to_segment_threshold = 0.05;
+                    float distance_to_segment_threshold = 1;
                     if (min_distance_to_segment_i < distance_to_segment_threshold && min_distance_to_segment_j < distance_to_segment_threshold )
                     {
                          intersection_t current_intersection;
-                         current_intersection.lines[0] = lines[i].line_cloud;
-                         current_intersection.lines[1] = lines[j].line_cloud;
+                         current_intersection.segments[0] = segments[i];
+                         current_intersection.segments[1] = segments[j];
                          current_intersection.point.x = point[0];
                          current_intersection.point.y = point[1];
                          current_intersection.point.z = point[2];
 
                          Eigen::Vector4f directions[2];
-                         directions[0][0] = lines[i].coeffs.values[3];
-                         directions[0][1] = lines[i].coeffs.values[4];
-                         directions[0][2] = lines[i].coeffs.values[5];
+                         directions[0][0] = segments[i].coeffs.values[3];
+                         directions[0][1] = segments[i].coeffs.values[4];
+                         directions[0][2] = segments[i].coeffs.values[5];
                          directions[0][3] = 0;
 
-                         directions[1][0] = lines[j].coeffs.values[3];
-                         directions[1][1] = lines[j].coeffs.values[4];
-                         directions[1][2] = lines[j].coeffs.values[5];
+                         directions[1][0] = segments[j].coeffs.values[3];
+                         directions[1][1] = segments[j].coeffs.values[4];
+                         directions[1][2] = segments[j].coeffs.values[5];
                          directions[1][3] = 0;
 
                          current_intersection.angle = pcl::getAngle3D(directions[1], directions[0]);
@@ -351,68 +349,33 @@ bool CrossLinesDetection::detectLines(pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud
                     }
                 }
         }
+         line_cloud_pub_.publish(cloud_lines_extracted);
      }
 
 
 
-     line_cloud_pub_.publish(cloud_lines_extracted);
+
 
      //TODO: agrupar las interseccions de 2 en 2, en funcion de si comparten un segmento o no.
      //Si una interseccion no comparte segmento con otra, se descarta
 
-     for (int i = 0; i < intersections.size(); i++) {
 
-     }
+    std::vector< std::pair<intersection_t, intersection_t> > paired_intersections;
 
-     //ITERATOR?
-     //ITER VECTOR
-  
-//	/*if (cloud->points.size() > 2)
-//	{
-//        seg.segment(*inliers, *coefficients);
-//		/* Coefficients for a model of type pcl::SACMODEL_LINE are: [x, y, z, dir_x, dir_y, dir_z] */
-//		cloud_filtered = cropCloud(cloud, inliers);
-//		clouds_vector.push_back(cloud_filtered);
-//        lines_vector.push_back(*coefficients);
-//		line_numb++;
-//		//pcl_conversions::fromPCL(coefficients, ros_coefficients);
-//		// Publish filtered cloud for debug
-//		if(publish_filtered_cloud_)
-//		{
-//			pub_filtered_cloud_.publish(cloud_filtered);
-//		}
-//	}
-//	else
-//	{
-//		ROS_INFO("Cloud Processed");
-//		return 0;
-//	}
-	/*
-	// Pose fill
-	line_pose_.header = ros_coefficients.header;
-	line_pose_.pose.orientation = tf::createQuaternionMsgFromYaw(ros_coefficients.values[4] / ros_coefficients.values[3]);
-	line_pose_.pose.position.x = 0.0;
-	line_pose_.pose.position.y = ros_coefficients.values[4] / ros_coefficients.values[3] + ros_coefficients.values[1] - ros_coefficients.values[4] / ros_coefficients.values[3] * ros_coefficients.values[0];
-	line_pose_.pose.position.z = 0.0;
+    for (int i = 0; i < intersections.size(); i++) {
+        for (int j = i+1; j < intersections.size(); j++) {
+            int first_id_i = intersections[i].segments[0].id;
+            int second_id_i = intersections[i].segments[1].id;
+            int first_id_j = intersections[j].segments[0].id;
+            int second_id_j = intersections[j].segments[1].id;
 
-	// Get and publish row end
-	if(getLineEnd(cloud_filtered, inliers, line_end_point.point))
-	{
-	  line_end_point.header = ros_coefficients.header;
-	  pub_line_end_.publish(line_end_point);
-	}
+            if (first_id_i == first_id_j || first_id_i == second_id_j || second_id_i == first_id_j || second_id_i == second_id_j)
+                paired_intersections.push_back(std::make_pair(intersections[i], intersections[j]));
+        }
+    }
 
-	// EXCEPTIONS 
-	if (line_pose_.pose.position.y * line_numb <= 0)  // If a row is detected on the oposite line_numb.
-	{
-	  ROS_DEBUG("[CrossLinesDetection::detectLines] %s : Oposite row is detected. %5.2f", (line_numb < 0 ? "right" : "left"), line_pose_.pose.position.y);
-	  if (line_numb < 0)
-		rows_status_msgs_.status_right = 1;
-	  else
-		rows_status_msgs_.status_left = 2;
-	  return 0;
-	}
-	*/
+    ROS_INFO("Paired intersections: %lu", paired_intersections.size());
+
 }
 
 /*!	\fn geometry_msgs::Pose CrossLinesDetection::cropCloud()
@@ -470,16 +433,16 @@ bool CrossLinesDetection::getLineEnd(const pcl::PointCloud<pcl::PointXYZ>::Ptr& 
 // MAIN
 int main(int argc, char** argv)
 {
-  ros::init(argc, argv, "row_detection_node");
+  ros::init(argc, argv, "laser_docking_node");
 
   ros::NodeHandle n;
-  CrossLinesDetection row_detection(n);
+  LaserDockingNode laser_docking_node(n);
 
-  row_detection.setup();
+  laser_docking_node.setup();
 
-  row_detection.start();
+  laser_docking_node.start();
 
-  row_detection.shutdown();
+  laser_docking_node.shutdown();
 
   return (0);
 }
